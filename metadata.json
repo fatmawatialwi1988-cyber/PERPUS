@@ -1,0 +1,6 @@
+{
+  "name": "Sistem Perpustakaan Sekolah",
+  "description": "Sistem informasi manajemen perpustakaan sekolah dengan fitur data buku, anggota, peminjaman, pengembalian, dan laporan terintegrasi.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
