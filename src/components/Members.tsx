@@ -176,30 +176,325 @@ export const Members: React.FC<MembersProps> = ({
     document.body.removeChild(link);
   };
 
-  // Generate Card JPG using canvas and html2canvas with 300 DPI high resolution
+  // Generate Card JPG using a native HTML5 Canvas (avoiding html2canvas oklch parsing issues)
   const generateCardJPG = async () => {
     if (!printCardMember) return;
-    const element = document.getElementById('library-card-view');
-    if (!element) return;
 
     try {
-      // 300 DPI high resolution scaling. Standard screen display card width is around ~380px.
-      // Scaling it by 3x or 4x provides crisp 300 DPI high-resolution for PVC printing.
-      const canvas = await html2canvas(element, {
-        useCORS: true,
-        scale: 3, // multiplies the resolution by 3 for crisp details
-        logging: false,
-        backgroundColor: null,
+      // 300 DPI high resolution dimensions for CR80 card (standard credit card size: 3.375" x 2.125")
+      // 1012 x 638 is standard.
+      const canvas = document.createElement('canvas');
+      canvas.width = 1012;
+      canvas.height = 638;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      // 1. Diagonal Linear Gradient Background
+      const bgGrad = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+      bgGrad.addColorStop(0, '#1e1b4b');   // indigo-900
+      bgGrad.addColorStop(0.6, '#0c1033'); // indigo-950/deep slate
+      bgGrad.addColorStop(1, '#020617');   // slate-950
+      ctx.fillStyle = bgGrad;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // 2. Decorative blur-glow circles
+      // Top left blue glow
+      const topGlow = ctx.createRadialGradient(0, 0, 0, 0, 0, 400);
+      topGlow.addColorStop(0, 'rgba(59, 130, 246, 0.15)'); // blue-500/15
+      topGlow.addColorStop(1, 'rgba(59, 130, 246, 0)');
+      ctx.fillStyle = topGlow;
+      ctx.beginPath();
+      ctx.arc(0, 0, 400, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Bottom right indigo glow
+      const bottomGlow = ctx.createRadialGradient(canvas.width, canvas.height, 0, canvas.width, canvas.height, 400);
+      bottomGlow.addColorStop(0, 'rgba(99, 102, 241, 0.2)'); // indigo-500/20
+      bottomGlow.addColorStop(1, 'rgba(99, 102, 241, 0)');
+      ctx.fillStyle = bottomGlow;
+      ctx.beginPath();
+      ctx.arc(canvas.width, canvas.height, 400, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Inner card border (subtle indigo stroke)
+      ctx.strokeStyle = 'rgba(99, 102, 241, 0.3)';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      const r = 36;
+      if (ctx.roundRect) {
+        ctx.roundRect(15, 15, canvas.width - 30, canvas.height - 30, r);
+      } else {
+        ctx.rect(15, 15, canvas.width - 30, canvas.height - 30);
+      }
+      ctx.stroke();
+
+      // Helper to load image
+      const loadImageSafe = (src: string): Promise<HTMLImageElement | null> => {
+        return new Promise((resolve) => {
+          if (!src) {
+            resolve(null);
+            return;
+          }
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.onload = () => resolve(img);
+          img.onerror = () => {
+            console.warn('Could not load image with CORS:', src);
+            resolve(null);
+          };
+          img.src = src;
+        });
+      };
+
+      // Load school logo and member photo
+      const [schoolLogoImg, memberPhotoImg, qrCodeImg] = await Promise.all([
+        loadImageSafe(settings.logoSekolah),
+        loadImageSafe(printCardMember.foto || ''),
+        loadImageSafe(qrCodeDataUrl)
+      ]);
+
+      // 3. School Header
+      const headerY = 55;
+      const marginX = 60;
+
+      // Draw School Logo
+      if (schoolLogoImg) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(marginX + 40, headerY + 40, 40, 0, Math.PI * 2);
+        ctx.clip();
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(marginX, headerY, 80, 80);
+        ctx.drawImage(schoolLogoImg, marginX, headerY, 80, 80);
+        ctx.restore();
+      } else {
+        // Fallback logo
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(marginX + 40, headerY + 40, 40, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#1e1b4b';
+        ctx.font = 'bold 36px "Inter", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('P', marginX + 40, headerY + 42);
+      }
+
+      // Draw Header Text
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 24px "Inter", sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText('KARTU ANGGOTA PERPUSTAKAAN', marginX + 100, headerY + 12);
+
+      ctx.fillStyle = '#c7d2fe';
+      ctx.font = '500 20px "Inter", sans-serif';
+      ctx.fillText(settings.namaSekolah, marginX + 100, headerY + 46);
+
+      // Dividing Line below header
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(marginX, headerY + 100);
+      ctx.lineTo(canvas.width - marginX, headerY + 100);
+      ctx.stroke();
+
+      // 4. Content Area
+      const contentY = 190;
+
+      // Member Photo
+      const photoWidth = 160;
+      const photoHeight = 208;
+      if (memberPhotoImg) {
+        ctx.save();
+        ctx.beginPath();
+        if (ctx.roundRect) {
+          ctx.roundRect(marginX, contentY, photoWidth, photoHeight, 16);
+        } else {
+          ctx.rect(marginX, contentY, photoWidth, photoHeight);
+        }
+        ctx.clip();
+        ctx.drawImage(memberPhotoImg, marginX, contentY, photoWidth, photoHeight);
+        ctx.restore();
+      } else {
+        // Fallback user placeholder
+        ctx.fillStyle = 'rgba(67, 56, 202, 0.6)'; // indigo-800/60
+        ctx.beginPath();
+        if (ctx.roundRect) {
+          ctx.roundRect(marginX, contentY, photoWidth, photoHeight, 16);
+        } else {
+          ctx.rect(marginX, contentY, photoWidth, photoHeight);
+        }
+        ctx.fill();
+
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Draw simple avatar icon
+        ctx.fillStyle = '#a5b4fc';
+        ctx.beginPath();
+        ctx.arc(marginX + 80, contentY + 60, 24, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(marginX + 80, contentY + 140, 48, Math.PI, 0);
+        ctx.fill();
+      }
+
+      // Member Details (Nama, Nomor Anggota, NIS, Kelas)
+      const detailsX = marginX + photoWidth + 40; // 60 + 160 + 40 = 260px
+
+      // Nama Lengkap Label & Value
+      ctx.fillStyle = '#a5b4fc';
+      ctx.font = 'bold 16px "Inter", sans-serif';
+      ctx.fillText('NAMA LENGKAP', detailsX, contentY + 10);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 28px "Inter", sans-serif';
+      ctx.fillText(printCardMember.nama, detailsX, contentY + 36);
+
+      // Nomor Anggota Label & Value
+      ctx.fillStyle = '#a5b4fc';
+      ctx.font = 'bold 16px "Inter", sans-serif';
+      ctx.fillText('NOMOR ANGGOTA', detailsX, contentY + 90);
+
+      ctx.fillStyle = '#fcd34d'; // amber-300
+      ctx.font = 'bold 22px "JetBrains Mono", "Fira Code", monospace';
+      ctx.fillText(printCardMember.barcodeAnggota, detailsX, contentY + 116);
+
+      // NIS & Kelas Side-by-Side
+      // NIS Label & Value
+      ctx.fillStyle = '#a5b4fc';
+      ctx.font = 'bold 16px "Inter", sans-serif';
+      ctx.fillText('NIS', detailsX, contentY + 165);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 22px "JetBrains Mono", "Fira Code", monospace';
+      ctx.fillText(printCardMember.nis, detailsX, contentY + 191);
+
+      // Kelas Label & Value (shifted right)
+      ctx.fillStyle = '#a5b4fc';
+      ctx.font = 'bold 16px "Inter", sans-serif';
+      ctx.fillText('KELAS', detailsX + 260, contentY + 165);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 22px "Inter", sans-serif';
+      ctx.fillText(printCardMember.kelas, detailsX + 260, contentY + 191);
+
+      // QR Code Box
+      const qrBoxSize = 180;
+      const qrX = canvas.width - marginX - qrBoxSize; // 1012 - 60 - 180 = 772px
+      const qrY = contentY;
+
+      // White base box
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      if (ctx.roundRect) {
+        ctx.roundRect(qrX, qrY, qrBoxSize, qrBoxSize, 16);
+      } else {
+        ctx.rect(qrX, qrY, qrBoxSize, qrBoxSize);
+      }
+      ctx.fill();
+
+      // Border for base box
+      ctx.strokeStyle = 'rgba(99, 102, 241, 0.3)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // QR Image
+      if (qrCodeImg) {
+        ctx.drawImage(qrCodeImg, qrX + 10, qrY + 10, qrBoxSize - 20, qrBoxSize - 20);
+      } else {
+        // Fallback text if QR image not loaded
+        ctx.fillStyle = '#1e1b4b';
+        ctx.font = 'bold 14px "Inter", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('SCAN ME', qrX + qrBoxSize / 2, qrY + qrBoxSize / 2);
+      }
+
+      // PINDAI QR Text
+      ctx.fillStyle = '#c7d2fe';
+      ctx.font = 'bold 14px "Inter", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('PINDAI QR', qrX + qrBoxSize / 2, qrY + qrBoxSize + 22);
+
+      // 5. Footer Dividing Line
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(marginX, contentY + 250);
+      ctx.lineTo(canvas.width - marginX, contentY + 250);
+      ctx.stroke();
+
+      // Barcode Base Box (White background)
+      const barcodeBoxWidth = 360;
+      const barcodeBoxHeight = 80;
+      const barcodeBoxX = marginX;
+      const barcodeBoxY = contentY + 280;
+
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      if (ctx.roundRect) {
+        ctx.roundRect(barcodeBoxX, barcodeBoxY, barcodeBoxWidth, barcodeBoxHeight, 8);
+      } else {
+        ctx.rect(barcodeBoxX, barcodeBoxY, barcodeBoxWidth, barcodeBoxHeight);
+      }
+      ctx.fill();
+
+      // Render Barcode Pattern inside white box
+      const generatePattern = (str: string) => {
+        let hash = 0;
+        for (let i = 0; i < str.length; i++) {
+          hash = str.charCodeAt(i) + ((hash << 5) - hash);
+        }
+        const pattern: number[] = [];
+        const len = 40;
+        for (let i = 0; i < len; i++) {
+          const bit = (Math.abs(hash) >> (i % 31)) & 1;
+          if (i % 2 === 0) {
+            pattern.push(bit ? 2 : 1);
+          } else {
+            pattern.push(bit ? 3 : 1);
+          }
+        }
+        return pattern;
+      };
+
+      const pattern = generatePattern(printCardMember.barcodeAnggota);
+      let totalPatternWidth = 0;
+      pattern.forEach(w => { totalPatternWidth += w; });
+
+      const scaleX = 300 / totalPatternWidth;
+      let currentBarX = barcodeBoxX + (barcodeBoxWidth - 300) / 2;
+      ctx.fillStyle = '#000000';
+      pattern.forEach((w, idx) => {
+        const isDark = idx % 2 === 0;
+        if (isDark) {
+          ctx.fillRect(currentBarX, barcodeBoxY + 10, w * scaleX, barcodeBoxHeight - 20);
+        }
+        currentBarX += w * scaleX;
       });
+
+      // Barcode ID Text on footer (Right-aligned)
+      ctx.fillStyle = '#a5b4fc';
+      ctx.font = 'semibold 24px "JetBrains Mono", "Fira Code", monospace';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(printCardMember.barcodeAnggota, canvas.width - marginX, barcodeBoxY + barcodeBoxHeight / 2);
+
+      // 6. Trigger high resolution JPG download
+      // Wait for a tiny tick to make sure all canvas updates are complete
+      await new Promise(resolve => setTimeout(resolve, 50));
 
       const dataUrl = canvas.toDataURL('image/jpeg', 1.0);
       const link = document.createElement('a');
       link.href = dataUrl;
-      // Format filename: NamaAnggota_NIS.jpg
       link.download = `${printCardMember.nama}_${printCardMember.nis}.jpg`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+
     } catch (error) {
       console.error('Error generating card JPG:', error);
       alert('Gagal mengunduh kartu dalam format JPG.');
@@ -531,10 +826,18 @@ export const Members: React.FC<MembersProps> = ({
               {/* Actual Library Card Layout */}
               <div
                 id="library-card-view"
-                className="w-full aspect-[1.586/1] bg-gradient-to-br from-indigo-900 via-indigo-950 to-slate-950 text-white rounded-xl p-4 shadow-lg border border-indigo-500/30 flex flex-col justify-between relative overflow-hidden"
+                className="w-full aspect-[1.586/1] rounded-xl p-4 shadow-lg border flex flex-col justify-between relative overflow-hidden"
+                style={{
+                  background: 'linear-gradient(135deg, #1e1b4b 0%, #0c1033 60%, #020617 100%)',
+                  color: '#ffffff',
+                  borderColor: 'rgba(99, 102, 241, 0.3)'
+                }}
               >
                 {/* School Header */}
-                <div className="flex items-center gap-3 border-b border-white/20 pb-2 relative z-10">
+                <div 
+                  className="flex items-center gap-3 border-b pb-2 relative z-10"
+                  style={{ borderColor: 'rgba(255, 255, 255, 0.2)' }}
+                >
                   <img
                     src={settings.logoSekolah}
                     alt="Logo"
@@ -545,7 +848,12 @@ export const Members: React.FC<MembersProps> = ({
                     <h5 className="text-[10px] font-bold tracking-wider uppercase">
                       KARTU ANGGOTA PERPUSTAKAAN
                     </h5>
-                    <p className="text-[8px] text-indigo-200 font-medium">{settings.namaSekolah}</p>
+                    <p 
+                      className="text-[8px] font-medium"
+                      style={{ color: '#c7d2fe' }}
+                    >
+                      {settings.namaSekolah}
+                    </p>
                   </div>
                 </div>
 
@@ -556,11 +864,19 @@ export const Members: React.FC<MembersProps> = ({
                       <img
                         src={printCardMember.foto}
                         alt="Photo"
-                        className="w-14 h-18 rounded-md object-cover border border-white/20 shadow-sm"
+                        className="w-14 h-18 rounded-md object-cover border shadow-sm"
+                        style={{ borderColor: 'rgba(255, 255, 255, 0.2)' }}
                         referrerPolicy="no-referrer"
                       />
                     ) : (
-                      <div className="w-14 h-18 rounded-md bg-indigo-800/60 flex items-center justify-center text-indigo-300 border border-white/20">
+                      <div 
+                        className="w-14 h-18 rounded-md flex items-center justify-center border"
+                        style={{
+                          backgroundColor: 'rgba(67, 56, 202, 0.6)',
+                          color: '#a5b4fc',
+                          borderColor: 'rgba(255, 255, 255, 0.2)'
+                        }}
+                      >
                         <UserIcon size={20} />
                       </div>
                     )}
@@ -568,28 +884,45 @@ export const Members: React.FC<MembersProps> = ({
 
                   <div className="flex-1 space-y-1 text-left min-w-0">
                     <div>
-                      <p className="text-[7px] text-indigo-300 font-bold uppercase tracking-wider leading-none">
+                      <p 
+                        className="text-[7px] font-bold uppercase tracking-wider leading-none"
+                        style={{ color: '#a5b4fc' }}
+                      >
                         Nama Lengkap
                       </p>
                       <p className="text-xs font-bold leading-tight truncate">{printCardMember.nama}</p>
                     </div>
 
                     <div>
-                      <p className="text-[7px] text-indigo-300 font-bold uppercase tracking-wider leading-none">
+                      <p 
+                        className="text-[7px] font-bold uppercase tracking-wider leading-none"
+                        style={{ color: '#a5b4fc' }}
+                      >
                         Nomor Anggota
                       </p>
-                      <p className="text-[9px] font-mono font-bold leading-none text-amber-300">{printCardMember.barcodeAnggota}</p>
+                      <p 
+                        className="text-[9px] font-mono font-bold leading-none"
+                        style={{ color: '#fcd34d' }}
+                      >
+                        {printCardMember.barcodeAnggota}
+                      </p>
                     </div>
 
                     <div className="grid grid-cols-2 gap-1.5">
                       <div>
-                        <p className="text-[7px] text-indigo-300 font-bold uppercase tracking-wider leading-none">
+                        <p 
+                          className="text-[7px] font-bold uppercase tracking-wider leading-none"
+                          style={{ color: '#a5b4fc' }}
+                        >
                           NIS
                         </p>
                         <p className="text-[9px] font-mono font-bold leading-none">{printCardMember.nis}</p>
                       </div>
                       <div>
-                        <p className="text-[7px] text-indigo-300 font-bold uppercase tracking-wider leading-none">
+                        <p 
+                          className="text-[7px] font-bold uppercase tracking-wider leading-none"
+                          style={{ color: '#a5b4fc' }}
+                        >
                           Kelas
                         </p>
                         <p className="text-[9px] font-bold leading-none">{printCardMember.kelas}</p>
@@ -603,22 +936,41 @@ export const Members: React.FC<MembersProps> = ({
                       <img
                         src={qrCodeDataUrl}
                         alt="QR Code"
-                        className="w-14 h-14 bg-white p-1 rounded-md border border-indigo-500/30"
+                        className="w-14 h-14 p-1 rounded-md border"
+                        style={{
+                          backgroundColor: '#ffffff',
+                          borderColor: 'rgba(99, 102, 241, 0.3)'
+                        }}
                       />
                     ) : (
-                      <div className="w-14 h-14 bg-white/10 rounded-md flex items-center justify-center text-[7px] text-indigo-300">
+                      <div 
+                        className="w-14 h-14 rounded-md flex items-center justify-center text-[7px]"
+                        style={{
+                          backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                          color: '#a5b4fc'
+                        }}
+                      >
                         Loading...
                       </div>
                     )}
-                    <span className="text-[7px] font-bold tracking-wider text-indigo-200">
+                    <span 
+                      className="text-[7px] font-bold tracking-wider"
+                      style={{ color: '#c7d2fe' }}
+                    >
                       PINDAI QR
                     </span>
                   </div>
                 </div>
 
                 {/* Card Footer (Barcode) */}
-                <div className="flex items-center justify-between border-t border-white/10 pt-2 relative z-10">
-                  <div className="bg-white px-2 py-0.5 rounded max-w-max">
+                <div 
+                  className="flex items-center justify-between border-t pt-2 relative z-10"
+                  style={{ borderColor: 'rgba(255, 255, 255, 0.1)' }}
+                >
+                  <div 
+                    className="px-2 py-0.5 rounded max-w-max"
+                    style={{ backgroundColor: '#ffffff' }}
+                  >
                     <Barcode
                       value={printCardMember.barcodeAnggota}
                       width={120}
@@ -626,14 +978,23 @@ export const Members: React.FC<MembersProps> = ({
                       showText={false}
                     />
                   </div>
-                  <span className="text-[9px] font-mono font-semibold tracking-widest text-indigo-300">
+                  <span 
+                    className="text-[9px] font-mono font-semibold tracking-widest"
+                    style={{ color: '#a5b4fc' }}
+                  >
                     {printCardMember.barcodeAnggota}
                   </span>
                 </div>
 
                 {/* Decorative glow elements */}
-                <div className="absolute -bottom-10 -right-10 w-24 h-24 bg-indigo-500/20 rounded-full blur-xl pointer-events-none" />
-                <div className="absolute -top-10 -left-10 w-24 h-24 bg-blue-500/15 rounded-full blur-xl pointer-events-none" />
+                <div 
+                  className="absolute -bottom-10 -right-10 w-24 h-24 rounded-full pointer-events-none" 
+                  style={{ backgroundColor: 'rgba(99, 102, 241, 0.2)', filter: 'blur(20px)' }}
+                />
+                <div 
+                  className="absolute -top-10 -left-10 w-24 h-24 rounded-full pointer-events-none" 
+                  style={{ backgroundColor: 'rgba(59, 130, 246, 0.15)', filter: 'blur(20px)' }}
+                />
               </div>
 
               {/* Action Buttons */}

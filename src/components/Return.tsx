@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
-import { Camera, User as UserIcon, BookOpen, Clock, AlertTriangle, Calendar, ClipboardCheck, ArrowUpRight, CheckCircle, Info } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { Camera, User as UserIcon, BookOpen, Clock, AlertTriangle, Calendar, ClipboardCheck, ArrowUpRight, CheckCircle, Info, Play, X } from 'lucide-react';
 import { Buku, Anggota, Peminjaman, Pengaturan } from '../types';
+import jsQR from 'jsqr';
 
 interface ReturnProps {
   books: Buku[];
@@ -25,14 +26,23 @@ export const Return: React.FC<ReturnProps> = ({
   // Selected books to return
   const [selectedBooksToReturn, setSelectedBooksToReturn] = useState<{ [kodeBuku: string]: boolean }>({});
 
+  // Camera Scanner state
+  const [cameraActive, setCameraActive] = useState(false);
+  const [scanType, setScanType] = useState<'member' | 'book' | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
   // Active borrow record for selected member
   const getActiveBorrows = (nis: string): Peminjaman[] => {
     return borrows.filter(b => b.nis === nis && (b.status === 'Dipinjam' || b.status === 'Terlambat'));
   };
 
   const handleMemberLookup = (barcode: string) => {
-    const cleanBarcode = barcode.trim();
-    const found = members.find(m => m.barcodeAnggota === cleanBarcode || m.nis === cleanBarcode);
+    const cleanBarcode = barcode.trim().toUpperCase();
+    const found = members.find(m => 
+      m.barcodeAnggota.toUpperCase() === cleanBarcode || 
+      m.nis.toUpperCase() === cleanBarcode
+    );
     if (found) {
       setSelectedMember(found);
       setSelectedBooksToReturn({});
@@ -40,6 +50,194 @@ export const Return: React.FC<ReturnProps> = ({
       setSelectedMember(null);
     }
   };
+
+  const handleSelectMemberDirect = (member: Anggota) => {
+    setMemberBarcode(member.nis);
+    setSelectedMember(member);
+    setSelectedBooksToReturn({});
+  };
+
+  // Helper for scanning books to return
+  const handleBookScanLookup = (scannedValue: string) => {
+    if (!selectedMember) {
+      alert("Silakan scan kartu anggota terlebih dahulu!");
+      return;
+    }
+    const cleanValue = scannedValue.trim().toUpperCase();
+    const cleanCleanValue = cleanValue.replace(/-/g, '');
+    
+    // Find matching book object
+    const foundBook = books.find(b => 
+      (b.barcode && b.barcode.toUpperCase() === cleanValue) || 
+      b.kodeBuku.toUpperCase() === cleanValue || 
+      (b.isbn && b.isbn.toUpperCase() === cleanValue) ||
+      (b.isbn && b.isbn.replace(/-/g, '').toUpperCase() === cleanCleanValue)
+    );
+    const targetCode = foundBook ? foundBook.kodeBuku : cleanValue;
+
+    // Check if currently borrowed
+    const memberBorrows = getActiveBorrows(selectedMember.nis);
+    let isBorrowed = false;
+    for (const b of memberBorrows) {
+      if (b.listBuku.some(item => item.kodeBuku.toUpperCase() === targetCode.toUpperCase() && item.status === 'Dipinjam')) {
+        isBorrowed = true;
+        break;
+      }
+    }
+
+    if (isBorrowed) {
+      setSelectedBooksToReturn(prev => ({
+        ...prev,
+        [targetCode]: true, // Select the book
+      }));
+    } else {
+      alert(`Buku dengan kode/ISBN/barcode "${scannedValue}" tidak ditemukan dalam daftar peminjaman aktif anggota ini.`);
+    }
+  };
+
+  // Start Camera
+  const startCamera = async (type: 'member' | 'book') => {
+    setScanType(type);
+    setCameraActive(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' }
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+    } catch (err) {
+      console.warn("Kamera tidak dapat diakses atau diblokir. Mengaktifkan mode simulasi.", err);
+    }
+  };
+
+  // Stop Camera
+  const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+    }
+    streamRef.current = null;
+    setCameraActive(false);
+    setScanType(null);
+  };
+
+  // Real-time QR Code scanning loop using jsQR
+  useEffect(() => {
+    let animationId: number;
+
+    const scan = () => {
+      if (cameraActive && videoRef.current) {
+        const video = videoRef.current;
+
+        // Ensure stream is bound and playing
+        if (streamRef.current && video.srcObject !== streamRef.current) {
+          video.srcObject = streamRef.current;
+          video.play().catch(err => console.warn("Video play failed:", err));
+        } else if (video.paused && streamRef.current) {
+          video.play().catch(err => console.warn("Video play failed:", err));
+        }
+
+        if (video.readyState === video.HAVE_ENOUGH_DATA) {
+          const canvas = document.createElement('canvas');
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const code = jsQR(imageData.data, imageData.width, imageData.height, {
+              inversionAttempts: 'attemptBoth',
+            });
+
+            if (code && code.data) {
+              // Beep sound
+              try {
+                const context = new (window.AudioContext || (window as any).webkitAudioContext)();
+                const osc = context.createOscillator();
+                const gain = context.createGain();
+                osc.connect(gain);
+                gain.connect(context.destination);
+                osc.frequency.setValueAtTime(800, context.currentTime);
+                gain.gain.setValueAtTime(0.1, context.currentTime);
+                osc.start();
+                osc.stop(context.currentTime + 0.15);
+              } catch (e) {}
+
+              const qrVal = code.data.trim();
+              if (scanType === 'member') {
+                setMemberBarcode(qrVal);
+                handleMemberLookup(qrVal);
+              } else if (scanType === 'book') {
+                handleBookScanLookup(qrVal);
+              }
+              stopCamera();
+              return;
+            }
+          }
+        }
+        animationId = requestAnimationFrame(scan);
+      }
+    };
+
+    if (cameraActive) {
+      animationId = requestAnimationFrame(scan);
+    }
+
+    return () => {
+      if (animationId) {
+        cancelAnimationFrame(animationId);
+      }
+    };
+  }, [cameraActive, scanType, selectedMember, members, books, borrows]);
+
+  // Simulate barcode/QR scanning in camera
+  const triggerSimulatedScan = () => {
+    // Play beep
+    try {
+      const context = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const osc = context.createOscillator();
+      const gain = context.createGain();
+      osc.connect(gain);
+      gain.connect(context.destination);
+      osc.frequency.setValueAtTime(800, context.currentTime);
+      gain.gain.setValueAtTime(0.1, context.currentTime);
+      osc.start();
+      osc.stop(context.currentTime + 0.15);
+    } catch (e) {}
+
+    if (scanType === 'member') {
+      const randomMember = members[Math.floor(Math.random() * members.length)];
+      if (randomMember) {
+        setMemberBarcode(randomMember.barcodeAnggota);
+        handleMemberLookup(randomMember.barcodeAnggota);
+      }
+    } else if (scanType === 'book') {
+      if (selectedMember) {
+        const memberBorrows = getActiveBorrows(selectedMember.nis);
+        const activeBukuList = memberBorrows.flatMap(b => b.listBuku.filter(item => item.status === 'Dipinjam'));
+        if (activeBukuList.length > 0) {
+          const randBuku = activeBukuList[Math.floor(Math.random() * activeBukuList.length)];
+          // Find matching book to get its barcode or use kodeBuku
+          const matched = books.find(b => b.kodeBuku === randBuku.kodeBuku);
+          const valToScan = matched?.barcode || matched?.kodeBuku || randBuku.kodeBuku;
+          handleBookScanLookup(valToScan);
+        } else {
+          alert('Anggota ini tidak memiliki peminjaman aktif.');
+        }
+      }
+    }
+    stopCamera();
+  };
+
+  // Cleanup camera stream on unmount
+  useEffect(() => {
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, []);
 
   // Helper: calculate late days & fine
   const calculateOverdueInfo = (dueDateStr: string): { lateDays: number; fine: number } => {
@@ -155,40 +353,103 @@ export const Return: React.FC<ReturnProps> = ({
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-      {/* COLUMN 1: MEMBER SCANNER INPUT */}
+      {/* COLUMN 1: MEMBER INPUT */}
       <div className="lg:col-span-1 space-y-6">
         <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-100 space-y-4">
-          <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-            <UserIcon className="w-5 h-5 text-blue-500" />
-            Scan Barcode Anggota
-          </h3>
+          <div className="flex justify-between items-center">
+            <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+              <UserIcon className="w-5 h-5 text-blue-500" />
+              Input No. Anggota / Siswa
+            </h3>
+          </div>
 
-          <input
-            type="text"
-            placeholder="Masukkan NIS / Barcode Anggota..."
-            value={memberBarcode}
-            onChange={e => {
-              setMemberBarcode(e.target.value);
-              handleMemberLookup(e.target.value);
-            }}
-            className="w-full border border-slate-200 px-3 py-2 rounded-lg text-sm bg-slate-50 focus:bg-white"
-          />
+          <div className="flex gap-2 relative">
+            <input
+              type="text"
+              placeholder="Masukkan NIS / Barcode Anggota..."
+              value={memberBarcode}
+              onChange={e => {
+                setMemberBarcode(e.target.value);
+                handleMemberLookup(e.target.value);
+              }}
+              className="w-full border border-slate-200 px-3 py-2 rounded-lg text-sm bg-slate-50 focus:bg-white"
+            />
+            {memberBarcode && (
+              <button
+                type="button"
+                onClick={() => {
+                  setMemberBarcode('');
+                  setSelectedMember(null);
+                  setSelectedBooksToReturn({});
+                }}
+                className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          {/* Suggestions Dropdown for Members */}
+          {!selectedMember && memberBarcode.trim() && (
+            <div className="border border-slate-100 rounded-xl max-h-48 overflow-y-auto bg-white divide-y divide-slate-50 shadow-sm text-xs z-10 relative">
+              {members
+                .filter(m => 
+                  m.nis.toUpperCase().includes(memberBarcode.toUpperCase()) ||
+                  m.nama.toUpperCase().includes(memberBarcode.toUpperCase()) ||
+                  m.barcodeAnggota.toUpperCase().includes(memberBarcode.toUpperCase())
+                )
+                .slice(0, 5)
+                .map(m => (
+                  <button
+                    key={m.nis}
+                    type="button"
+                    onClick={() => handleSelectMemberDirect(m)}
+                    className="w-full text-left px-3 py-2.5 hover:bg-blue-50/50 flex justify-between items-center transition-colors font-medium text-slate-700"
+                  >
+                    <span>{m.nama} ({m.kelas})</span>
+                    <span className="font-mono text-slate-400 font-bold shrink-0 ml-2">NIS: {m.nis}</span>
+                  </button>
+                ))
+              }
+              {members.filter(m => 
+                m.nis.toUpperCase().includes(memberBarcode.toUpperCase()) ||
+                m.nama.toUpperCase().includes(memberBarcode.toUpperCase()) ||
+                m.barcodeAnggota.toUpperCase().includes(memberBarcode.toUpperCase())
+              ).length === 0 && (
+                <div className="p-3 text-center text-slate-400">
+                  Siswa/Anggota tidak ditemukan
+                </div>
+              )}
+            </div>
+          )}
 
           {selectedMember ? (
-            <div className="p-4 bg-blue-50/50 border border-blue-100 rounded-xl flex gap-3 text-xs">
+            <div className="p-4 bg-blue-50/50 border border-blue-100 rounded-xl relative flex gap-3 text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedMember(null);
+                  setMemberBarcode('');
+                  setSelectedBooksToReturn({});
+                }}
+                className="absolute right-2 top-2 p-1 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-200/50"
+                title="Batal pilih"
+              >
+                <X className="w-4 h-4" />
+              </button>
               {selectedMember.foto ? (
                 <img
                   src={selectedMember.foto}
                   alt={selectedMember.nama}
-                  className="w-12 h-12 rounded-lg object-cover bg-white shadow-xs"
+                  className="w-12 h-12 rounded-lg object-cover bg-white shadow-xs shrink-0"
                   referrerPolicy="no-referrer"
                 />
               ) : (
-                <div className="w-12 h-12 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center">
+                <div className="w-12 h-12 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center shrink-0">
                   <UserIcon className="w-6 h-6" />
                 </div>
               )}
-              <div>
+              <div className="pr-6">
                 <p className="font-bold text-slate-900">{selectedMember.nama}</p>
                 <p className="text-slate-500">NIS: {selectedMember.nis} · {selectedMember.kelas}</p>
                 <p className="text-blue-700 font-semibold mt-1">
@@ -198,7 +459,7 @@ export const Return: React.FC<ReturnProps> = ({
             </div>
           ) : (
             <div className="p-4 bg-slate-50 border border-dashed border-slate-200 rounded-xl text-center text-xs text-slate-400 font-medium">
-              Belum ada anggota yang terpilih. Masukkan NIS atau pilih dari daftar jalan pintas pengujian di bawah.
+              Silakan masukkan NIS atau pilih dari daftar pencarian.
             </div>
           )}
         </div>
@@ -235,7 +496,7 @@ export const Return: React.FC<ReturnProps> = ({
       {/* COLUMN 2 & 3: OUTSTANDING BORROWS */}
       <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-xs border border-slate-100 flex flex-col justify-between min-h-[300px]">
         <div>
-          <div className="border-b border-slate-100 pb-4 mb-4">
+          <div className="border-b border-slate-100 pb-4 mb-4 flex justify-between items-center">
             <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
               <BookOpen className="w-5.5 h-5.5 text-indigo-600" />
               Buku yang Sedang Dipinjam Anggota

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Settings as SettingsIcon, Save, Database, ShieldAlert, Palette, Moon, Sun, Library, User as UserIcon } from 'lucide-react';
+import { Settings as SettingsIcon, Save, Database, ShieldAlert, Palette, Moon, Sun, Library, User as UserIcon, UploadCloud, X, Image } from 'lucide-react';
 import { Pengaturan, User } from '../types';
 
 interface SettingsProps {
@@ -20,6 +20,45 @@ export const Settings: React.FC<SettingsProps> = ({
   onUpdateUsers,
 }) => {
   const [formData, setFormData] = useState<Pengaturan>({ ...settings });
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleFileChange = (file: File) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      alert('File harus berupa gambar!');
+      return;
+    }
+    // Limit size to 2MB to prevent localStorage overflow
+    if (file.size > 2 * 1024 * 1024) {
+      alert('Ukuran file gambar terlalu besar! Maksimal 2MB.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const result = e.target?.result as string;
+      setFormData(prev => ({ ...prev, logoSekolah: result }));
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      handleFileChange(file);
+    }
+  };
 
   // User management states
   const [selectedUsername, setSelectedUsername] = useState(users[0]?.username || 'admin');
@@ -180,16 +219,70 @@ export const Settings: React.FC<SettingsProps> = ({
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-600 uppercase mb-1">
-              URL Logo Sekolah
+            <label className="block text-xs font-semibold text-slate-600 uppercase mb-2">
+              Logo Sekolah
             </label>
-            <input
-              type="text"
-              value={formData.logoSekolah || ''}
-              onChange={e => setFormData(prev => ({ ...prev, logoSekolah: e.target.value }))}
-              className="w-full border border-slate-200 px-3 py-2 rounded-lg text-sm bg-slate-50 focus:bg-white"
-              placeholder="https://..."
-            />
+            
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-center">
+              {/* Preview container */}
+              <div className="md:col-span-1 flex flex-col items-center justify-center p-3 bg-slate-50 border border-slate-200 rounded-2xl h-36">
+                {formData.logoSekolah ? (
+                  <div className="relative group w-full h-full flex flex-col items-center justify-center">
+                    <img
+                      src={formData.logoSekolah}
+                      alt="Logo Sekolah"
+                      className="max-w-full max-h-24 object-contain rounded-lg"
+                      referrerPolicy="no-referrer"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setFormData(prev => ({ ...prev, logoSekolah: '' }))}
+                      className="absolute -top-1 -right-1 p-1 bg-red-100 hover:bg-red-200 text-red-600 rounded-full transition-colors shadow-sm cursor-pointer"
+                      title="Hapus Logo"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                    <span className="text-[10px] text-slate-400 mt-1">Pratinjau Logo</span>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center justify-center text-slate-400">
+                    <Image className="w-8 h-8 mb-1 opacity-40" />
+                    <span className="text-[10px] text-center">Belum ada logo</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Upload area */}
+              <div className="md:col-span-3">
+                <label
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                  className={`flex flex-col items-center justify-center border-2 border-dashed rounded-2xl p-4 cursor-pointer transition-all h-36 ${
+                    isDragging
+                      ? 'border-blue-500 bg-blue-50/50'
+                      : 'border-slate-200 bg-slate-50/30 hover:bg-slate-50 hover:border-slate-300'
+                  }`}
+                >
+                  <UploadCloud className={`w-8 h-8 mb-1.5 transition-colors ${isDragging ? 'text-blue-500' : 'text-slate-400'}`} />
+                  <p className="text-xs font-semibold text-slate-700 text-center">
+                    Tarik & lepas file logo ke sini, atau <span className="text-blue-600">pilih file</span>
+                  </p>
+                  <p className="text-[10px] text-slate-400 mt-1 text-center">
+                    Mendukung PNG, JPG, JPEG, SVG (Maks. 2MB)
+                  </p>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={e => {
+                      const file = e.target.files?.[0];
+                      if (file) handleFileChange(file);
+                    }}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+            </div>
           </div>
 
           {/* Rules settings */}

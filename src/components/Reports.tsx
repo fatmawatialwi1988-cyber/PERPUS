@@ -1,8 +1,20 @@
 import React, { useState } from 'react';
-import { Printer, Download, Search, Filter, ArrowUpDown, ChevronLeft, ChevronRight, FileSpreadsheet, FileText } from 'lucide-react';
+import { Printer, Download, Search, Filter, ArrowUpDown, ChevronLeft, ChevronRight, FileSpreadsheet, FileText, BarChart3, Calendar, TrendingUp, BookOpen } from 'lucide-react';
 import { Buku, Anggota, Peminjaman, Kategori, Pengaturan } from '../types';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+} from 'recharts';
 
 interface ReportsProps {
   books: Buku[];
@@ -228,6 +240,39 @@ export const Reports: React.FC<ReportsProps> = ({
 
   const compiledData = compileData();
 
+  // Generate monthly borrow statistics for the chart
+  const getMonthlyChartData = () => {
+    const months = [
+      "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+      "Juli", "Agustus", "September", "Oktober", "November", "Desember"
+    ];
+    
+    const monthlyStats = months.map((name) => ({
+      name,
+      peminjaman: 0,
+      bukuDipinjam: 0,
+    }));
+
+    const targetYear = filterYear || '2026';
+
+    borrows.forEach(b => {
+      if (!b.tanggalPinjam) return;
+      const parts = b.tanggalPinjam.split('-');
+      if (parts[0] === targetYear) {
+        const monthIdx = parseInt(parts[1]) - 1;
+        if (monthIdx >= 0 && monthIdx < 12) {
+          monthlyStats[monthIdx].peminjaman += 1;
+          const totalBooks = b.listBuku ? b.listBuku.length : 0;
+          monthlyStats[monthIdx].bukuDipinjam += totalBooks;
+        }
+      }
+    });
+
+    return monthlyStats;
+  };
+
+  const chartData = getMonthlyChartData();
+
   // Pagination bounds
   const totalPages = Math.max(1, Math.ceil(compiledData.length / itemsPerPage));
   const paginatedData = compiledData.slice(
@@ -258,7 +303,7 @@ export const Reports: React.FC<ReportsProps> = ({
   };
 
   // PDF download with jsPDF & AutoTable
-  const handleExportPDF = () => {
+  const handleExportPDF = async () => {
     if (compiledData.length === 0) {
       alert('Tidak ada data laporan untuk diekspor!');
       return;
@@ -266,55 +311,81 @@ export const Reports: React.FC<ReportsProps> = ({
 
     const doc = new jsPDF('p', 'mm', 'a4');
     
-    // --- 1. KOPSURAT (Official Letterhead) ---
-    // Outer circle (Deep Navy Blue)
-    doc.setFillColor(30, 58, 138); 
-    doc.circle(28, 24, 11, 'F');
-    
-    // Inner circle (Royal Blue)
-    doc.setFillColor(37, 99, 235);
-    doc.circle(28, 24, 9, 'F');
-    
-    // Gold circle ring
-    doc.setDrawColor(245, 158, 11);
-    doc.setLineWidth(0.5);
-    doc.circle(28, 24, 7.5, 'S');
+    // --- 1. KOPSURAT LOGO (Official Letterhead) ---
+    let logoDrawn = false;
+    if (settings.logoSekolah) {
+      try {
+        const cleanLogoDataUrl = await new Promise<string>((resolve, reject) => {
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.naturalWidth || 200;
+            canvas.height = img.naturalHeight || 200;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.fillStyle = '#FFFFFF';
+              ctx.fillRect(0, 0, canvas.width, canvas.height);
+              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+              resolve(canvas.toDataURL('image/jpeg', 0.95));
+            } else {
+              reject(new Error('Gagal mendapatkan context 2D'));
+            }
+          };
+          img.onerror = () => reject(new Error('Gagal memuat gambar'));
+          img.src = settings.logoSekolah;
+        });
 
-    // Crest book symbol
-    doc.setFillColor(255, 255, 255);
-    doc.rect(23, 22.5, 4, 3, 'F'); // Left page
-    doc.rect(29, 22.5, 4, 3, 'F'); // Right page
-    
-    // Book division lines
-    doc.setDrawColor(30, 41, 59);
-    doc.setLineWidth(0.3);
-    doc.line(24, 24, 26, 24);
-    doc.line(30, 24, 32, 24);
+        doc.addImage(cleanLogoDataUrl, 'JPEG', 16, 12, 23, 23);
+        logoDrawn = true;
+      } catch (err) {
+        console.error('Gagal memuat logo sekolah kustom, beralih ke logo bawaan:', err);
+      }
+    }
 
-    // Star on top of book
-    doc.setTextColor(253, 224, 71); // Gold yellow
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(10);
-    doc.text("★", 26.5, 20.5);
+    if (!logoDrawn) {
+      // Outer circle (Deep Navy Blue)
+      doc.setFillColor(30, 58, 138); 
+      doc.circle(28, 24, 11, 'F');
+      
+      // Inner circle (Royal Blue)
+      doc.setFillColor(37, 99, 235);
+      doc.circle(28, 24, 9, 'F');
+      
+      // Gold circle ring
+      doc.setDrawColor(245, 158, 11);
+      doc.setLineWidth(0.5);
+      doc.circle(28, 24, 7.5, 'S');
 
-    // --- 2. SCHOOL & OFFICE INFO ---
-    doc.setTextColor(30, 41, 59); // Slate 800
+      // Crest book symbol
+      doc.setFillColor(255, 255, 255);
+      doc.rect(23, 22.5, 4, 3, 'F'); // Left page
+      doc.rect(29, 22.5, 4, 3, 'F'); // Right page
+      
+      // Book division lines
+      doc.setDrawColor(30, 41, 59);
+      doc.setLineWidth(0.3);
+      doc.line(24, 24, 26, 24);
+      doc.line(30, 24, 32, 24);
+
+      // Star on top of book
+      doc.setTextColor(253, 224, 71); // Gold yellow
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
+      doc.text("★", 26.5, 20.5);
+    }
+
+    // --- 2. SCHOOL & OFFICE INFO (KOP PERPUSTAKAAN) ---
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(8);
-    doc.text("KEMENTERIAN PENDIDIKAN, KEBUDAYAAN, RISET, DAN TEKNOLOGI", 44, 15);
-    doc.setFontSize(8.5);
-    doc.text("DINAS PENDIDIKAN PROVINSI DKI JAKARTA", 44, 19.5);
-    
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(14);
+    doc.setFontSize(15);
     doc.setTextColor(30, 58, 138); // Deep Navy Blue
-    doc.text(`PERPUSTAKAAN ${settings.namaSekolah.toUpperCase()}`, 44, 25.5);
+    doc.text(`PERPUSTAKAAN ${settings.namaSekolah.toUpperCase()}`, 44, 20);
     
-    doc.setFont("helvetica", "italic");
-    doc.setFontSize(8.5);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
     doc.setTextColor(71, 85, 105); // Slate 600
-    doc.text(settings.alamat || "Jl. Pendidikan No. 1, Jakarta Selatan", 44, 30.5);
-    doc.text(`Telepon: ${settings.nomorTelepon || "(021) 7654321"} | Email: info@perpus-${settings.namaSekolah.toLowerCase().replace(/[^a-z0-9]/g, '') || "sekolah"}.sch.id`, 44, 35);
+    doc.text(settings.alamat || "Jl. Trans Sulawesi, Donggala, Sulawesi Tengah", 44, 26);
+    doc.text(`Telepon: ${settings.nomorTelepon || "(021) 7654321"} | Email: info@perpus-${settings.namaSekolah.toLowerCase().replace(/[^a-z0-9]/g, '') || "sekolah"}.sch.id`, 44, 31.5);
 
     // --- 3. DOUBLE HORIZONTAL LINE SEPARATOR ---
     doc.setDrawColor(30, 41, 59);
@@ -382,11 +453,106 @@ export const Reports: React.FC<ReportsProps> = ({
       ]);
     }
 
+    // Draw Monthly Borrowing Chart on PDF if Report Type is 'peminjaman'
+    let startY = 59;
+
+    if (reportType === 'peminjaman') {
+      // 1. Draw chart container box
+      doc.setFillColor(248, 250, 252);
+      doc.setDrawColor(226, 232, 240);
+      doc.setLineWidth(0.3);
+      doc.roundedRect(15, 59, 180, 48, 4, 4, 'FD');
+
+      // 2. Title inside container
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8.5);
+      doc.setTextColor(30, 41, 59);
+      doc.text(`Grafik Tren Peminjaman Bulanan - Tahun ${filterYear}`, 20, 65);
+
+      // 3. Legend keys
+      doc.setFillColor(59, 130, 246); // Blue
+      doc.rect(125, 62, 3, 3, 'F');
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7);
+      doc.setTextColor(71, 85, 105);
+      doc.text("Frekuensi Peminjaman", 130, 64.5);
+
+      doc.setFillColor(99, 102, 241); // Indigo
+      doc.rect(160, 62, 3, 3, 'F');
+      doc.text("Total Buku Dipinjam", 165, 64.5);
+
+      // 4. Compute max value for scaling
+      const maxVal = Math.max(...chartData.map(d => Math.max(d.peminjaman, d.bukuDipinjam)), 5);
+      
+      // Grid configuration
+      const gridXStart = 26;
+      const gridXEnd = 186;
+      const gridYStart = 72;
+      const gridYEnd = 98;
+      const gridHeight = gridYEnd - gridYStart; // 26mm
+      const monthWidth = (gridXEnd - gridXStart) / 12; // 13.33mm
+
+      // Draw horizontal grid lines (4 grid intervals = 5 lines)
+      doc.setDrawColor(241, 245, 249);
+      doc.setLineWidth(0.25);
+      for (let j = 0; j <= 4; j++) {
+        const gridY = gridYEnd - (j / 4) * gridHeight;
+        doc.line(gridXStart, gridY, gridXEnd, gridY);
+        
+        // Y-axis values on the left
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(6);
+        doc.setTextColor(148, 163, 184);
+        const yVal = Math.round((j / 4) * maxVal);
+        doc.text(String(yVal), gridXStart - 3, gridY + 1, { align: 'right' });
+      }
+
+      // Draw months and data bars
+      const monthAbbrs = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
+      chartData.forEach((d, i) => {
+        const monthX = gridXStart + i * monthWidth + monthWidth / 2;
+        
+        // Month label
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(6.5);
+        doc.setTextColor(100, 116, 139);
+        doc.text(monthAbbrs[i], monthX, gridYEnd + 4, { align: 'center' });
+
+        // Bar 1: Peminjaman (blue)
+        const h1 = (d.peminjaman / maxVal) * gridHeight;
+        if (h1 > 0) {
+          doc.setFillColor(59, 130, 246);
+          doc.rect(monthX - 3.2, gridYEnd - h1, 2.5, h1, 'F');
+          
+          // Draw small count label above bar
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(5.5);
+          doc.setTextColor(59, 130, 246);
+          doc.text(String(d.peminjaman), monthX - 2, gridYEnd - h1 - 1, { align: 'center' });
+        }
+
+        // Bar 2: Buku Terpinjam (indigo)
+        const h2 = (d.bukuDipinjam / maxVal) * gridHeight;
+        if (h2 > 0) {
+          doc.setFillColor(99, 102, 241);
+          doc.rect(monthX + 0.7, gridYEnd - h2, 2.5, h2, 'F');
+
+          // Draw small count label above bar
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(5.5);
+          doc.setTextColor(99, 102, 241);
+          doc.text(String(d.bukuDipinjam), monthX + 2, gridYEnd - h2 - 1, { align: 'center' });
+        }
+      });
+
+      startY = 112;
+    }
+
     // AutoTable layout
     autoTable(doc, {
       head: [pdfHeaders],
       body: pdfRows,
-      startY: 59,
+      startY: startY,
       theme: 'striped',
       headStyles: {
         fillColor: [30, 58, 138], // Deep navy
@@ -495,7 +661,7 @@ export const Reports: React.FC<ReportsProps> = ({
     
     const today = new Date();
     const formattedToday = `${today.getDate()} ${getMonthIndo(today.getMonth())} ${today.getFullYear()}`;
-    doc.text(`Jakarta, ${formattedToday}`, 145, currentY);
+    doc.text(`Donggala, ${formattedToday}`, 145, currentY);
     doc.text("Kepala Perpustakaan,", 145, currentY + 4);
     
     doc.setDrawColor(203, 213, 225); // Slate 300
@@ -580,7 +746,7 @@ export const Reports: React.FC<ReportsProps> = ({
       </div>
 
       {/* Filtering Toolbar */}
-      <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-100 grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-100 grid grid-cols-1 md:grid-cols-5 gap-4">
         {/* Row 1, Col 1: Realtime Search */}
         <div className="md:col-span-1 space-y-1">
           <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Cari Cepat</label>
@@ -599,7 +765,7 @@ export const Reports: React.FC<ReportsProps> = ({
           </div>
         </div>
 
-        {/* Row 1, Col 2: Date Start & End */}
+        {/* Row 1, Col 2: Mulai Tanggal */}
         <div className="md:col-span-1 space-y-1">
           <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Mulai Tanggal</label>
           <input
@@ -613,7 +779,7 @@ export const Reports: React.FC<ReportsProps> = ({
           />
         </div>
 
-        {/* Row 1, Col 3: Date End */}
+        {/* Row 1, Col 3: Sampai Tanggal */}
         <div className="md:col-span-1 space-y-1">
           <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Sampai Tanggal</label>
           <input
@@ -627,7 +793,26 @@ export const Reports: React.FC<ReportsProps> = ({
           />
         </div>
 
-        {/* Row 1, Col 4: Print buttons */}
+        {/* Row 1, Col 4: Tahun Laporan */}
+        <div className="md:col-span-1 space-y-1">
+          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Tahun Laporan</label>
+          <select
+            value={filterYear}
+            onChange={e => {
+              setFilterYear(e.target.value);
+              setCurrentPage(1);
+            }}
+            className="w-full border border-slate-200 px-3 py-1.5 rounded-lg text-xs bg-slate-50 font-bold text-slate-700 cursor-pointer"
+          >
+            <option value="2024">2024</option>
+            <option value="2025">2025</option>
+            <option value="2026">2026</option>
+            <option value="2027">2027</option>
+            <option value="2028">2028</option>
+          </select>
+        </div>
+
+        {/* Row 1, Col 5: Print buttons */}
         <div className="md:col-span-1 flex items-end justify-end gap-2">
           <button
             onClick={handleExportExcel}
@@ -645,6 +830,137 @@ export const Reports: React.FC<ReportsProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Monthly Borrowing Chart Dashboard Card */}
+      {reportType === 'peminjaman' && (
+        <div className="bg-white p-6 rounded-2xl shadow-xs border border-slate-100 space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <BarChart3 className="w-5 h-5 text-blue-600" />
+                Tren Grafik Peminjaman Buku Bulanan - Tahun {filterYear}
+              </h3>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                Memvisualisasikan intensitas transaksi peminjaman dan jumlah volume buku yang keluar per bulan secara langsung.
+              </p>
+            </div>
+            
+            {/* Legend / Key metrics */}
+            <div className="flex items-center gap-4 text-xs font-semibold">
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded-full bg-blue-500 block"></span>
+                <span className="text-slate-600">Frekuensi Peminjaman ({chartData.reduce((acc, curr) => acc + curr.peminjaman, 0)}x)</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded-full bg-indigo-500 block"></span>
+                <span className="text-slate-600">Total Buku ({chartData.reduce((acc, curr) => acc + curr.bukuDipinjam, 0)} Buku)</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="h-72 w-full mt-2">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="colorPeminjaman" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.15}/>
+                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                  </linearGradient>
+                  <linearGradient id="colorBuku" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#6366f1" stopOpacity={0.15}/>
+                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                <XAxis 
+                  dataKey="name" 
+                  tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 500 }}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <YAxis 
+                  tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 500 }}
+                  axisLine={false}
+                  tickLine={false}
+                  allowDecimals={false}
+                />
+                <Tooltip 
+                  contentStyle={{ 
+                    backgroundColor: '#1e293b', 
+                    borderRadius: '12px', 
+                    border: 'none',
+                    padding: '10px 14px',
+                    boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'
+                  }}
+                  itemStyle={{ fontSize: '11px', fontWeight: 'bold' }}
+                  labelStyle={{ color: '#94a3b8', fontSize: '10px', fontWeight: 'bold', marginBottom: '4px' }}
+                />
+                <Area 
+                  name="Frekuensi Pinjam"
+                  type="monotone" 
+                  dataKey="peminjaman" 
+                  stroke="#3b82f6" 
+                  strokeWidth={2.5}
+                  fillOpacity={1} 
+                  fill="url(#colorPeminjaman)" 
+                />
+                <Area 
+                  name="Total Buku"
+                  type="monotone" 
+                  dataKey="bukuDipinjam" 
+                  stroke="#6366f1" 
+                  strokeWidth={2.5}
+                  fillOpacity={1} 
+                  fill="url(#colorBuku)" 
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+          
+          {/* Bento box overview for statistics */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-3 border-t border-slate-100">
+            <div className="p-3 bg-slate-50/55 rounded-xl flex items-center gap-3 border border-slate-100">
+              <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center text-blue-600 border border-blue-100/50">
+                <TrendingUp className="w-4 h-4" />
+              </div>
+              <div>
+                <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Rata-rata Bulanan</span>
+                <span className="text-xs font-bold text-slate-700 block">
+                  {Math.round((chartData.reduce((acc, curr) => acc + curr.peminjaman, 0) / 12) * 10) / 10} Transaksi / Bulan
+                </span>
+              </div>
+            </div>
+
+            <div className="p-3 bg-slate-50/55 rounded-xl flex items-center gap-3 border border-slate-100">
+              <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center text-indigo-600 border border-indigo-100/50">
+                <BookOpen className="w-4 h-4" />
+              </div>
+              <div>
+                <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Buku Terpinjam Terbanyak</span>
+                <span className="text-xs font-bold text-slate-700 block">
+                  {Math.max(...chartData.map(c => c.bukuDipinjam))} Buku dalam Sebulan
+                </span>
+              </div>
+            </div>
+
+            <div className="p-3 bg-slate-50/55 rounded-xl flex items-center gap-3 border border-slate-100">
+              <div className="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center text-emerald-600 border border-emerald-100/50">
+                <Calendar className="w-4 h-4" />
+              </div>
+              <div>
+                <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Bulan Teraktif</span>
+                <span className="text-xs font-bold text-slate-700 block">
+                  {(() => {
+                    const maxVal = Math.max(...chartData.map(c => c.peminjaman));
+                    const activeMonth = chartData.find(c => c.peminjaman === maxVal);
+                    return activeMonth && maxVal > 0 ? `${activeMonth.name} (${maxVal}x)` : 'Tidak ada data';
+                  })()}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Preview Table */}
       <div className="bg-white rounded-2xl shadow-xs border border-slate-100 overflow-hidden">

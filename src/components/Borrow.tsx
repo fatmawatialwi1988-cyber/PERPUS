@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Camera, User as UserIcon, BookOpen, Plus, Trash2, Calendar, ClipboardCheck, Play, Square, AlertTriangle, CheckCircle, X } from 'lucide-react';
 import { Buku, Anggota, Peminjaman, Pengaturan } from '../types';
+import jsQR from 'jsqr';
 
 interface BorrowProps {
   books: Buku[];
@@ -71,6 +72,111 @@ export const Borrow: React.FC<BorrowProps> = ({
     setScanType(null);
   };
 
+  // Real-time QR Code scanning loop using jsQR
+  useEffect(() => {
+    let animationId: number;
+    
+    const scan = () => {
+      if (cameraActive && videoRef.current) {
+        const video = videoRef.current;
+        
+        // Ensure stream is bound and playing
+        if (streamRef.current && video.srcObject !== streamRef.current) {
+          video.srcObject = streamRef.current;
+          video.play().catch(err => console.warn("Video play failed:", err));
+        } else if (video.paused && streamRef.current) {
+          video.play().catch(err => console.warn("Video play failed:", err));
+        }
+
+        if (video.readyState === video.HAVE_ENOUGH_DATA) {
+          // Create or reuse an off-screen canvas to process the video frame
+          const canvas = document.createElement('canvas');
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            // Decode the QR Code
+            const code = jsQR(imageData.data, imageData.width, imageData.height, {
+              inversionAttempts: 'attemptBoth',
+            });
+            
+            if (code && code.data) {
+              // Successfully decoded a QR code! Play beep audio feedback
+              try {
+                const context = new (window.AudioContext || (window as any).webkitAudioContext)();
+                const osc = context.createOscillator();
+                const gain = context.createGain();
+                osc.connect(gain);
+                gain.connect(context.destination);
+                osc.frequency.setValueAtTime(800, context.currentTime);
+                gain.gain.setValueAtTime(0.1, context.currentTime);
+                osc.start();
+                osc.stop(context.currentTime + 0.15);
+              } catch (e) {
+                console.error("Audio beep error:", e);
+              }
+
+              const qrVal = code.data.trim();
+              if (scanType === 'member') {
+                setMemberBarcode(qrVal);
+                handleMemberLookup(qrVal);
+              } else if (scanType === 'book') {
+                handleBookScanResult(qrVal);
+              }
+              stopCamera();
+              return; // End scanning animation loop
+            }
+          }
+        }
+        animationId = requestAnimationFrame(scan);
+      }
+    };
+
+    if (cameraActive) {
+      animationId = requestAnimationFrame(scan);
+    }
+
+    return () => {
+      if (animationId) {
+        cancelAnimationFrame(animationId);
+      }
+    };
+  }, [cameraActive, scanType, members, books]);
+
+  // Unified Scanner Helper for Books (adds directly to cart)
+  const handleBookScanResult = (scannedValue: string) => {
+    const cleanBarcode = scannedValue.trim().toUpperCase();
+    const cleanCleanBarcode = cleanBarcode.replace(/-/g, '');
+    const found = books.find(b => 
+      (b.barcode && b.barcode.toUpperCase() === cleanBarcode) || 
+      b.kodeBuku.toUpperCase() === cleanBarcode ||
+      (b.isbn && b.isbn.toUpperCase() === cleanBarcode) ||
+      (b.isbn && b.isbn.replace(/-/g, '').toUpperCase() === cleanCleanBarcode)
+    );
+
+    if (found) {
+      if (found.jumlahTersedia <= 0) {
+        alert(`Gagal: Buku "${found.judul}" saat ini HABIS (Stok 0)!`);
+        return;
+      }
+      
+      // Add directly to cart
+      setCart(prevCart => {
+        if (prevCart.some(item => item.book.kodeBuku === found.kodeBuku)) {
+          alert(`Buku "${found.judul}" sudah ada di daftar pinjam.`);
+          return prevCart;
+        }
+        return [...prevCart, { book: found, days: settings.lamaPinjamDefault }];
+      });
+      setSelectedBook(null);
+      setBookBarcode('');
+    } else {
+      alert(`Buku dengan kode/ISBN/barcode "${scannedValue}" tidak ditemukan.`);
+    }
+  };
+
   // Simulate automatic detection in camera
   const triggerSimulatedScan = () => {
     // Play sound beep
@@ -97,8 +203,8 @@ export const Borrow: React.FC<BorrowProps> = ({
       // Choose random available book
       const randBook = books.find(b => b.jumlahTersedia > 0) || books[0];
       if (randBook) {
-        setBookBarcode(randBook.barcode || randBook.kodeBuku);
-        handleBookLookup(randBook.barcode || randBook.kodeBuku);
+        const valToScan = randBook.barcode || randBook.kodeBuku || randBook.isbn;
+        handleBookScanResult(valToScan);
       }
     }
     stopCamera();
@@ -115,8 +221,11 @@ export const Borrow: React.FC<BorrowProps> = ({
 
   // Lookup Member
   const handleMemberLookup = (barcode: string) => {
-    const cleanBarcode = barcode.trim();
-    const found = members.find(m => m.barcodeAnggota === cleanBarcode || m.nis === cleanBarcode);
+    const cleanBarcode = barcode.trim().toUpperCase();
+    const found = members.find(m => 
+      m.barcodeAnggota.toUpperCase() === cleanBarcode || 
+      m.nis.toUpperCase() === cleanBarcode
+    );
     if (found) {
       // Check validation: Overdue borrows?
       const hasOverdue = checkMemberHasOverdue(found.nis);
@@ -129,10 +238,25 @@ export const Borrow: React.FC<BorrowProps> = ({
     }
   };
 
+  const handleSelectMemberDirect = (member: Anggota) => {
+    setMemberBarcode(member.nis);
+    const hasOverdue = checkMemberHasOverdue(member.nis);
+    if (hasOverdue) {
+      alert(`Peringatan: Anggota ${member.nama} memiliki peminjaman buku yang TERLAMBAT dan dilarang meminjam sebelum melunasi denda/mengembalikan buku tersebut!`);
+    }
+    setSelectedMember(member);
+  };
+
   // Lookup Book
   const handleBookLookup = (barcode: string) => {
-    const cleanBarcode = barcode.trim();
-    const found = books.find(b => b.barcode === cleanBarcode || b.kodeBuku === cleanBarcode);
+    const cleanBarcode = barcode.trim().toUpperCase();
+    const cleanCleanBarcode = cleanBarcode.replace(/-/g, '');
+    const found = books.find(b => 
+      (b.barcode && b.barcode.toUpperCase() === cleanBarcode) || 
+      b.kodeBuku.toUpperCase() === cleanBarcode ||
+      (b.isbn && b.isbn.toUpperCase() === cleanBarcode) ||
+      (b.isbn && b.isbn.replace(/-/g, '').toUpperCase() === cleanCleanBarcode)
+    );
     if (found) {
       if (found.jumlahTersedia <= 0) {
         alert(`Peringatan: Buku "${found.judul}" saat ini HABIS (Stok 0)!`);
@@ -166,6 +290,74 @@ export const Borrow: React.FC<BorrowProps> = ({
     setBookBarcode('');
   };
 
+  // Save transaction directly when student and book are both entered
+  const handleDirectSaveTransaction = (book: Buku) => {
+    if (!selectedMember) {
+      alert('Pilih/Scan barcode Anggota terlebih dahulu!');
+      return;
+    }
+
+    if (checkMemberHasOverdue(selectedMember.nis)) {
+      alert('Transaksi ditolak: Anggota masih memiliki tunggakan/keterlambatan buku!');
+      return;
+    }
+
+    if (book.jumlahTersedia <= 0) {
+      alert(`Stok buku "${book.judul}" tidak tersedia!`);
+      return;
+    }
+
+    // Create Borrow record
+    const today = new Date();
+    const todayStr = today.toISOString().split('T')[0];
+
+    // default loan period from settings or default 7 days
+    const days = settings.lamaPinjamDefault || 7;
+    const dueDate = new Date();
+    dueDate.setDate(today.getDate() + days);
+    const dueDateStr = dueDate.toISOString().split('T')[0];
+
+    const newBorrow: Peminjaman = {
+      id: borrows.length + 1,
+      nis: selectedMember.nis,
+      namaAnggota: selectedMember.nama,
+      tanggalPinjam: todayStr,
+      tanggalKembali: dueDateStr,
+      status: 'Dipinjam',
+      listBuku: [{
+        kodeBuku: book.kodeBuku,
+        judul: book.judul,
+        status: 'Dipinjam',
+      }],
+    };
+
+    // Update book quantities (decrement available, increment dipinjam)
+    const updatedBooks = books.map(b => {
+      if (b.kodeBuku === book.kodeBuku) {
+        const nextTersedia = Math.max(0, b.jumlahTersedia - 1);
+        return {
+          ...b,
+          jumlahTersedia: nextTersedia,
+          jumlahDipinjam: b.jumlahDipinjam + 1,
+          status: nextTersedia > 0 ? ('Tersedia' as const) : ('Habis' as const),
+        };
+      }
+      return b;
+    });
+
+    onUpdateBooks(updatedBooks);
+    onUpdateBorrows([...borrows, newBorrow]);
+
+    alert(`Peminjaman buku "${book.judul}" oleh ${selectedMember.nama} BERHASIL disimpan!`);
+    
+    // reset views
+    setSelectedMember(null);
+    setMemberBarcode('');
+    setSelectedBook(null);
+    setBookBarcode('');
+    setCart([]);
+  };
+
   // Remove from Cart
   const handleRemoveFromCart = (kodeBuku: string) => {
     setCart(cart.filter(item => item.book.kodeBuku !== kodeBuku));
@@ -178,55 +370,93 @@ export const Borrow: React.FC<BorrowProps> = ({
       return;
     }
 
-    if (cart.length === 0) {
-      alert('Daftar pinjam buku masih kosong!');
-      return;
-    }
-
     // Check again if member is overdue
     if (checkMemberHasOverdue(selectedMember.nis)) {
       alert('Transaksi ditolak: Anggota masih memiliki tunggakan/keterlambatan buku!');
       return;
     }
 
-    // Create Borrow record
     const today = new Date();
     const todayStr = today.toISOString().split('T')[0];
 
-    // calculate due date based on max days in cart
-    const maxDays = Math.max(...cart.map(c => c.days), 7);
-    const dueDate = new Date();
-    dueDate.setDate(today.getDate() + maxDays);
-    const dueDateStr = dueDate.toISOString().split('T')[0];
+    let newBorrow: Peminjaman;
+    let updatedBooks: Buku[];
 
-    const newBorrow: Peminjaman = {
-      id: borrows.length + 1,
-      nis: selectedMember.nis,
-      namaAnggota: selectedMember.nama,
-      tanggalPinjam: todayStr,
-      tanggalKembali: dueDateStr,
-      status: 'Dipinjam',
-      listBuku: cart.map(item => ({
-        kodeBuku: item.book.kodeBuku,
-        judul: item.book.judul,
+    if (cart.length > 0) {
+      // calculate due date based on max days in cart
+      const maxDays = Math.max(...cart.map(c => c.days), 7);
+      const dueDate = new Date();
+      dueDate.setDate(today.getDate() + maxDays);
+      const dueDateStr = dueDate.toISOString().split('T')[0];
+
+      newBorrow = {
+        id: borrows.length + 1,
+        nis: selectedMember.nis,
+        namaAnggota: selectedMember.nama,
+        tanggalPinjam: todayStr,
+        tanggalKembali: dueDateStr,
         status: 'Dipinjam',
-      })),
-    };
+        listBuku: cart.map(item => ({
+          kodeBuku: item.book.kodeBuku,
+          judul: item.book.judul,
+          status: 'Dipinjam',
+        })),
+      };
 
-    // Update book quantities (decrement available, increment dipinjam)
-    const updatedBooks = books.map(b => {
-      const cartItem = cart.find(item => item.book.kodeBuku === b.kodeBuku);
-      if (cartItem) {
-        const nextTersedia = Math.max(0, b.jumlahTersedia - 1);
-        return {
-          ...b,
-          jumlahTersedia: nextTersedia,
-          jumlahDipinjam: b.jumlahDipinjam + 1,
-          status: nextTersedia > 0 ? ('Tersedia' as const) : ('Habis' as const),
-        };
+      updatedBooks = books.map(b => {
+        const cartItem = cart.find(item => item.book.kodeBuku === b.kodeBuku);
+        if (cartItem) {
+          const nextTersedia = Math.max(0, b.jumlahTersedia - 1);
+          return {
+            ...b,
+            jumlahTersedia: nextTersedia,
+            jumlahDipinjam: b.jumlahDipinjam + 1,
+            status: nextTersedia > 0 ? ('Tersedia' as const) : ('Habis' as const),
+          };
+        }
+        return b;
+      });
+    } else if (selectedBook) {
+      if (selectedBook.jumlahTersedia <= 0) {
+        alert(`Stok buku "${selectedBook.judul}" tidak tersedia!`);
+        return;
       }
-      return b;
-    });
+
+      const days = settings.lamaPinjamDefault || 7;
+      const dueDate = new Date();
+      dueDate.setDate(today.getDate() + days);
+      const dueDateStr = dueDate.toISOString().split('T')[0];
+
+      newBorrow = {
+        id: borrows.length + 1,
+        nis: selectedMember.nis,
+        namaAnggota: selectedMember.nama,
+        tanggalPinjam: todayStr,
+        tanggalKembali: dueDateStr,
+        status: 'Dipinjam',
+        listBuku: [{
+          kodeBuku: selectedBook.kodeBuku,
+          judul: selectedBook.judul,
+          status: 'Dipinjam',
+        }],
+      };
+
+      updatedBooks = books.map(b => {
+        if (b.kodeBuku === selectedBook.kodeBuku) {
+          const nextTersedia = Math.max(0, b.jumlahTersedia - 1);
+          return {
+            ...b,
+            jumlahTersedia: nextTersedia,
+            jumlahDipinjam: b.jumlahDipinjam + 1,
+            status: nextTersedia > 0 ? ('Tersedia' as const) : ('Habis' as const),
+          };
+        }
+        return b;
+      });
+    } else {
+      alert('Daftar pinjam buku masih kosong dan tidak ada buku terpilih!');
+      return;
+    }
 
     onUpdateBooks(updatedBooks);
     onUpdateBorrows([...borrows, newBorrow]);
@@ -250,21 +480,14 @@ export const Borrow: React.FC<BorrowProps> = ({
           <div className="flex justify-between items-center">
             <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
               <UserIcon className="w-5 h-5 text-blue-500" />
-              Scan Kartu Anggota
+              Input No. Anggota / Siswa
             </h3>
-            <button
-              onClick={() => startCamera('member')}
-              className="p-2 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors"
-            >
-              <Camera className="w-4 h-4" />
-              Aktifkan Scanner
-            </button>
           </div>
 
-          <div className="flex gap-2">
+          <div className="flex gap-2 relative">
             <input
               type="text"
-              placeholder="Masukkan NIS / Barcode Anggota..."
+              placeholder="Ketik NIS, No. Kartu, atau Nama..."
               value={memberBarcode}
               onChange={e => {
                 setMemberBarcode(e.target.value);
@@ -272,27 +495,84 @@ export const Borrow: React.FC<BorrowProps> = ({
               }}
               className="flex-1 border border-slate-200 px-3 py-2 rounded-lg text-sm bg-slate-50 focus:bg-white"
             />
+            {memberBarcode && (
+              <button
+                type="button"
+                onClick={() => {
+                  setMemberBarcode('');
+                  setSelectedMember(null);
+                }}
+                className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
           </div>
 
+          {/* Suggestions Dropdown for Members */}
+          {!selectedMember && memberBarcode.trim() && (
+            <div className="border border-slate-100 rounded-xl max-h-48 overflow-y-auto bg-white divide-y divide-slate-50 shadow-sm text-xs z-10 relative">
+              {members
+                .filter(m => 
+                  m.nis.toUpperCase().includes(memberBarcode.toUpperCase()) ||
+                  m.nama.toUpperCase().includes(memberBarcode.toUpperCase()) ||
+                  m.barcodeAnggota.toUpperCase().includes(memberBarcode.toUpperCase())
+                )
+                .slice(0, 5)
+                .map(m => (
+                  <button
+                    key={m.nis}
+                    type="button"
+                    onClick={() => handleSelectMemberDirect(m)}
+                    className="w-full text-left px-3 py-2.5 hover:bg-blue-50/50 flex justify-between items-center transition-colors font-medium text-slate-700"
+                  >
+                    <span>{m.nama} ({m.kelas})</span>
+                    <span className="font-mono text-slate-400 font-bold shrink-0 ml-2">NIS: {m.nis}</span>
+                  </button>
+                ))
+              }
+              {members.filter(m => 
+                m.nis.toUpperCase().includes(memberBarcode.toUpperCase()) ||
+                m.nama.toUpperCase().includes(memberBarcode.toUpperCase()) ||
+                m.barcodeAnggota.toUpperCase().includes(memberBarcode.toUpperCase())
+              ).length === 0 && (
+                <div className="p-3 text-center text-slate-400">
+                  Siswa/Anggota tidak ditemukan
+                </div>
+              )}
+            </div>
+          )}
+
           {selectedMember ? (
-            <div className={`p-4 rounded-xl border flex gap-3 ${
+            <div className={`p-4 rounded-xl border relative flex gap-3 ${
               checkMemberHasOverdue(selectedMember.nis) 
                 ? 'bg-red-50 border-red-200 text-red-900' 
                 : 'bg-emerald-50 border-emerald-200 text-emerald-900'
             }`}>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedMember(null);
+                  setMemberBarcode('');
+                }}
+                className="absolute right-2 top-2 p-1 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-200/50"
+                title="Batal pilih"
+              >
+                <X className="w-4 h-4" />
+              </button>
               {selectedMember.foto ? (
                 <img
                   src={selectedMember.foto}
                   alt={selectedMember.nama}
-                  className="w-12 h-12 rounded-lg object-cover bg-white shadow-xs"
+                  className="w-12 h-12 rounded-lg object-cover bg-white shadow-xs shrink-0"
                   referrerPolicy="no-referrer"
                 />
               ) : (
-                <div className="w-12 h-12 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center">
+                <div className="w-12 h-12 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center shrink-0">
                   <UserIcon className="w-6 h-6" />
                 </div>
               )}
-              <div className="space-y-0.5 text-xs">
+              <div className="space-y-0.5 text-xs pr-6">
                 <p className="font-bold">{selectedMember.nama}</p>
                 <p className="font-mono text-slate-500">NIS: {selectedMember.nis} · {selectedMember.kelas}</p>
                 <div className="flex items-center gap-1 mt-1">
@@ -312,7 +592,7 @@ export const Borrow: React.FC<BorrowProps> = ({
             </div>
           ) : (
             <div className="p-4 bg-slate-50 border border-dashed border-slate-200 rounded-xl text-center text-xs text-slate-400 font-medium">
-              Belum ada anggota yang discan/terpilih.
+              Belum ada anggota yang terpilih.
             </div>
           )}
         </div>
@@ -322,58 +602,127 @@ export const Borrow: React.FC<BorrowProps> = ({
           <div className="flex justify-between items-center">
             <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
               <BookOpen className="w-5 h-5 text-indigo-500" />
-              Scan Barcode Buku
+              Pencarian Buku
             </h3>
-            <button
-              disabled={!selectedMember}
-              onClick={() => startCamera('book')}
-              className="p-2 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors"
-            >
-              <Camera className="w-4 h-4" />
-              Aktifkan Scanner
-            </button>
           </div>
 
-          <div className="flex gap-2">
+          <div className="flex gap-2 relative">
             <input
               type="text"
-              disabled={!selectedMember}
-              placeholder={selectedMember ? "Masukkan Kode Buku / Barcode..." : "Scan Anggota dahulu..."}
+              placeholder="Masukkan Kode Buku / Barcode / ISBN..."
               value={bookBarcode}
               onChange={e => {
                 setBookBarcode(e.target.value);
                 handleBookLookup(e.target.value);
               }}
-              className="flex-1 border border-slate-200 px-3 py-2 rounded-lg text-sm bg-slate-50 focus:bg-white disabled:opacity-50"
+              className="flex-1 border border-slate-200 px-3 py-2 rounded-lg text-sm bg-slate-50 focus:bg-white"
             />
+            {bookBarcode && (
+              <button
+                type="button"
+                onClick={() => {
+                  setBookBarcode('');
+                  setSelectedBook(null);
+                }}
+                className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
           </div>
 
+          {/* Suggestions Dropdown for Books */}
+          {!selectedBook && bookBarcode.trim() && (
+            <div className="border border-slate-100 rounded-xl max-h-48 overflow-y-auto bg-white divide-y divide-slate-50 shadow-sm text-xs z-10 relative">
+              {books
+                .filter(b => 
+                  b.kodeBuku.toUpperCase().includes(bookBarcode.toUpperCase()) ||
+                  b.judul.toUpperCase().includes(bookBarcode.toUpperCase()) ||
+                  (b.isbn && b.isbn.toUpperCase().includes(bookBarcode.toUpperCase()))
+                )
+                .slice(0, 5)
+                .map(b => (
+                  <button
+                    key={b.kodeBuku}
+                    type="button"
+                    onClick={() => {
+                      setBookBarcode(b.kodeBuku);
+                      handleBookLookup(b.kodeBuku);
+                    }}
+                    className="w-full text-left px-3 py-2.5 hover:bg-indigo-50/50 flex justify-between items-center transition-colors font-medium text-slate-700"
+                  >
+                    <span className="line-clamp-1">{b.judul}</span>
+                    <span className="font-mono text-slate-400 font-bold shrink-0 ml-2">{b.kodeBuku}</span>
+                  </button>
+                ))
+              }
+              {books.filter(b => 
+                b.kodeBuku.toUpperCase().includes(bookBarcode.toUpperCase()) ||
+                b.judul.toUpperCase().includes(bookBarcode.toUpperCase()) ||
+                (b.isbn && b.isbn.toUpperCase().includes(bookBarcode.toUpperCase()))
+              ).length === 0 && (
+                <div className="p-3 text-center text-slate-400">
+                  Buku tidak ditemukan
+                </div>
+              )}
+            </div>
+          )}
+
           {selectedBook ? (
-            <div className="p-4 bg-indigo-50/50 border border-indigo-100 rounded-xl flex gap-3 text-xs">
+            <div className="p-4 bg-indigo-50/50 border border-indigo-100 rounded-xl relative flex gap-3 text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedBook(null);
+                  setBookBarcode('');
+                }}
+                className="absolute right-2 top-2 p-1 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-200/50"
+                title="Batal pilih"
+              >
+                <X className="w-4 h-4" />
+              </button>
               {selectedBook.coverBuku ? (
                 <img
                   src={selectedBook.coverBuku}
                   alt={selectedBook.judul}
-                  className="w-10 h-14 object-cover bg-white shadow-xs rounded"
+                  className="w-10 h-14 object-cover bg-white shadow-xs rounded shrink-0"
                   referrerPolicy="no-referrer"
                 />
               ) : (
-                <div className="w-10 h-14 bg-indigo-100 text-indigo-600 flex items-center justify-center rounded">
+                <div className="w-10 h-14 bg-indigo-100 text-indigo-600 flex items-center justify-center rounded shrink-0">
                   <BookOpen className="w-5 h-5" />
                 </div>
               )}
-              <div className="flex-1 space-y-1">
+              <div className="flex-1 space-y-1 pr-6">
                 <p className="font-bold text-slate-900 line-clamp-1">{selectedBook.judul}</p>
                 <p className="text-slate-500">Oleh {selectedBook.pengarang}</p>
                 <p className="font-semibold text-slate-700">Tersedia: {selectedBook.jumlahTersedia} unit</p>
-                <button
-                  type="button"
-                  onClick={handleAddToCart}
-                  className="mt-2 w-full flex items-center justify-center gap-1.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[10px] font-bold shadow-xs cursor-pointer"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  Tambah ke Daftar Pinjam
-                </button>
+                
+                <div className="mt-3 space-y-2">
+                  {selectedMember ? (
+                    <button
+                      type="button"
+                      onClick={() => handleDirectSaveTransaction(selectedBook)}
+                      className="w-full flex items-center justify-center gap-1.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-sm cursor-pointer transition-colors animate-pulse"
+                    >
+                      <ClipboardCheck className="w-4 h-4" />
+                      Simpan & Pinjam Sekarang
+                    </button>
+                  ) : (
+                    <div className="text-[10px] text-amber-600 font-semibold bg-amber-50 p-2 rounded-lg border border-amber-100">
+                      Silakan pilih Anggota/Siswa terlebih dahulu untuk meminjam buku.
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={handleAddToCart}
+                    className="w-full flex items-center justify-center gap-1.5 py-1.5 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded-lg text-[10px] font-bold cursor-pointer transition-colors"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    Tambah ke Daftar Pinjam ({cart.length})
+                  </button>
+                </div>
               </div>
             </div>
           ) : (
@@ -480,11 +829,11 @@ export const Borrow: React.FC<BorrowProps> = ({
         {/* Action button trigger */}
         <div className="pt-4 border-t border-slate-100 flex justify-between items-center">
           <div className="text-xs text-slate-500 font-semibold">
-            Status: {selectedMember ? `Siap Transaksi (${selectedMember.nama})` : 'Harap scan anggota'}
+            Status: {selectedMember ? `Siap Transaksi (${selectedMember.nama})` : 'Harap pilih anggota & buku'}
           </div>
           <button
             onClick={handleSaveTransaction}
-            disabled={!selectedMember || cart.length === 0 || checkMemberHasOverdue(selectedMember.nis)}
+            disabled={!selectedMember || (cart.length === 0 && !selectedBook) || checkMemberHasOverdue(selectedMember.nis)}
             className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold shadow-md cursor-pointer transition-colors flex items-center gap-2"
           >
             <ClipboardCheck className="w-4 h-4" />
